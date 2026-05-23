@@ -2481,4 +2481,3 @@ object TacticalMath {
             drugs = drugsMap
         )
     }
-}
