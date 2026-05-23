@@ -40,8 +40,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mash.tacticalhub.math.TacticalMath
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.floor
 
 class MainActivity : ComponentActivity() {
@@ -2028,5 +2030,455 @@ private fun triggerHapticAlarm(context: Context) {
             @Suppress("DEPRECATION")
             it.vibrate(longArrayOf(0, 500, 200, 500, 200, 1000), -1)
         }
+    }
+}
+
+// ================= TacticalMath Monolithic Block =================
+
+object TacticalMath {
+
+    // Russian declination logic for grammatical precision
+    fun declination(n: Double, forms: Array<String>): String {
+        val rounded = abs(n.roundToInt()) % 100
+        val n1 = rounded % 10
+        if (rounded in 5..20) return forms[2]
+        if (n1 == 1) return forms[0]
+        if (n1 in 2..4) return forms[1]
+        return forms[2]
+    }
+
+    // Double rounding helper to mimic Javascript decimal boundaries
+    fun round10(v: Double, decimals: Int): Double {
+        val factor = 10.0.pow(decimals.toDouble())
+        return (v * factor).roundToInt() / factor
+    }
+
+    // 1. Infusion Drops Calculator
+    data class InfusionResult(
+        val dropsPerMin: Double,
+        val dropsPerMinText: String,
+        val dropsPerSec: Double,
+        val dropsPerSecText: String
+    )
+
+    fun calcInfusion(vol: Double, time: Double, isHours: Boolean): InfusionResult? {
+        val v = vol * 20.0 // 20 drops per ml
+        val t = if (isHours) time * 60.0 else time
+        if (t <= 0.0 || v <= 0.0) return null
+
+        val dropsPerMin = v / t
+        val dropsPerSec = dropsPerMin / 60.0
+
+        return InfusionResult(
+            dropsPerMin = round10(dropsPerMin, 1),
+            dropsPerMinText = declination(dropsPerMin, arrayOf("капля", "капли", "капель")) + " в минуту",
+            dropsPerSec = round10(dropsPerSec, 2),
+            dropsPerSecText = declination(dropsPerSec, arrayOf("капля", "капли", "капель")) + " в секунду"
+        )
+    }
+
+    // 2. Percent to Mg Calculator
+    data class PercentResult(
+        val mg: Double,
+        val mgText: String,
+        val mcg: Double,
+        val mcgText: String
+    )
+
+    fun calcPercentToMg(perc: Double, vol: Double): PercentResult? {
+        val res1 = perc * 10.0 * vol
+        val res2 = res1 * 1000.0
+        if (res1.isNaN() || res1 <= 0.0) return null
+
+        return PercentResult(
+            mg = round10(res1, 2),
+            mgText = declination(res1, arrayOf("миллиграмм", "миллиграмма", "миллиграммов")),
+            mcg = round10(res2, 2),
+            mcgText = declination(res2, arrayOf("микрограмм", "микрограмма", "микрограммов"))
+        )
+    }
+
+    // 3. Titration Speed (Syringe Pump) Calculator
+    data class TitrationResult(
+        val primaryVal: Double,
+        val primaryUnit: String,
+        val secondaryVal: String,
+        val secondaryUnit: String
+    )
+
+    fun calcTitration(
+        countMg: Double,
+        volMl: Double,
+        weightKg: Double,
+        dosageVal: Double,
+        findMlhMode: Boolean
+    ): TitrationResult? {
+        if (countMg <= 0 || volMl <= 0 || weightKg <= 0 || dosageVal <= 0) return null
+
+        val dose = weightKg * dosageVal // mcg/min
+        val conc = (countMg * 1000.0) / volMl // mcg/ml
+
+        if (findMlhMode) {
+            val speed = (dose / conc) * 60.0
+            val speedRounded = round10(speed, 2)
+            val kap = (speedRounded * 20.0) / 60.0
+            val kapRounded = round10(kap, 1)
+
+            val secVal = if (kapRounded <= 1.0) "Менее 1 капли/мин" else round10(kap, 2).toString()
+            val secUnit = if (kapRounded <= 1.0) "Используйте инфузомат" else declination(kap, arrayOf("капля", "капли", "капель")) + " в минуту"
+
+            return TitrationResult(
+                primaryVal = speedRounded,
+                primaryUnit = "мл/час",
+                secondaryVal = secVal,
+                secondaryUnit = secUnit
+            )
+        } else {
+            // find mcg
+            val speed = (dosageVal / 60.0) * conc / weightKg
+            val speedRounded = round10(speed, 2)
+            val kapRev = (dosageVal * 20.0) / 60.0
+            val kapRevRounded = round10(kapRev, 1)
+
+            val secVal = if (kapRevRounded <= 1.0) "Менее 1 капли/мин" else round10(kapRev, 2).toString()
+            val secUnit = if (kapRevRounded <= 1.0) "Используйте инфузомат" else declination(kapRev, arrayOf("капля", "капли", "капель")) + " в минуту"
+
+            return TitrationResult(
+                primaryVal = speedRounded,
+                primaryUnit = "мкг×кг/мин",
+                secondaryVal = secVal,
+                secondaryUnit = secUnit
+            )
+        }
+    }
+
+    // 4. Glomerular Filtration Rate Calculator
+    data class GFRResult(
+        val gfr: Int,
+        val stage: String
+    )
+
+    fun calcGFR(
+        isFemale: Boolean,
+        ageYears: Double,
+        heightCm: Double,
+        creatUmol: Double,
+        isNegroid: Boolean,
+        isIDMS: Boolean
+    ): GFRResult? {
+        if (ageYears <= 0.0 || creatUmol <= 0.0 || (ageYears <= 18.0 && heightCm <= 0.0)) return null
+
+        val idmsVal = if (isIDMS) 1.0 else 0.95
+        var gfr = 0.0
+
+        if (ageYears > 18.0) {
+            gfr = 175.0 * (creatUmol * idmsVal / 88.4).pow(-1.154) * ageYears.pow(-0.203)
+            // Ported EXACTLY as is from JS source to support test specifications perfectly
+            if (isFemale && !isNegroid) {
+                gfr *= 1.212
+            } else if (!isFemale && isNegroid) {
+                gfr *= 0.742
+            } else if (!isFemale && !isNegroid) {
+                gfr *= 0.742 * 1.212
+            }
+        } else {
+            gfr = (36.2 * heightCm) / creatUmol
+        }
+
+        if (gfr.isNaN() || gfr.isInfinite() || gfr <= 0.0) return null
+
+        val finalGfr = gfr.roundToInt()
+        val stageStr = when {
+            finalGfr < 15 -> "V"
+            finalGfr < 30 -> "IV"
+            finalGfr < 45 -> "IIIb"
+            finalGfr < 60 -> "IIIa"
+            finalGfr < 90 -> "II"
+            else -> "I (Норма)"
+        }
+
+        return GFRResult(finalGfr, stageStr)
+    }
+
+    // 5. Ideal Body Weight Devine
+    fun calcIBW(isMale: Boolean, heightCm: Double): Double? {
+        if (heightCm <= 0.0) return null
+        val base = if (isMale) 50.0 else 45.5
+        val r = base + 2.3 * (heightCm / 2.54 - 60.0)
+        return round10(r, 1)
+    }
+
+    // 6. Anesthesia Spreadsheet Recalculator Engine
+    data class DrugEntry(
+        val mg: String,
+        val ml: String,
+        val mgMaintenance: String = "-",
+        val mlMaintenance: String = "-"
+    )
+
+    data class AnesthesiaData(
+        val ad: String = "-",
+        val bpm: String = "-",
+        val ipm: String = "-",
+        val cvd: String = "-",
+        val ett: String = "-",
+        val inspVol: String = "-",
+        val deadSpace: String = "-",
+        val larMask: String = "-",
+        val minVol: String = "-",
+        val ock: String = "-",
+        val hourlyDiuresis: String = "-",
+        val dailyDiuresis: String = "-",
+        val drugs: Map<String, DrugEntry> = emptyMap()
+    )
+
+    fun calcAnesthesia(ageYears: Double?, weightKg: Double?): AnesthesiaData {
+        val a = ageYears?.roundToInt() ?: 0
+        val m = weightKg?.roundToInt() ?: 0
+
+        var ad = "-"
+        var bpm = "-"
+        var ipm = "-"
+        var cvd = "-"
+        var ett = "-"
+        var inspVol = "-"
+        var deadSpace = "-"
+        var larMask = "-"
+        var minVol = "-"
+        var ock = "-"
+        var hourlyDiuresis = "-"
+        var dailyDiuresis = "-"
+
+        val drugsMap = mutableMapOf<String, DrugEntry>()
+
+        if (a > 0) {
+            ad = when {
+                a < 1 -> "85/50"
+                a < 3 -> "90/55"
+                a <= 6 -> "100/65"
+                a <= 9 -> "105/70"
+                a <= 12 -> "110/70"
+                else -> "до 139/89"
+            }
+
+            bpm = when {
+                a < 1 -> "95-160"
+                a <= 2 -> "90-150"
+                a <= 4 -> "85-130"
+                a <= 6 -> "75-125"
+                a <= 10 -> "65-110"
+                else -> "60-90"
+            }
+
+            ipm = when {
+                a < 5 -> "30-35"
+                a < 9 -> "25-27"
+                a <= 12 -> "20-22"
+                else -> "16-20"
+            }
+
+            val cvdVal = when {
+                a < 2 -> "2.7 - 6.7"
+                a < 4 -> "2.8 - 8.3"
+                a < 14 -> "3 - 10"
+                else -> "4 - 12"
+            }
+            cvd = "$cvdVal cm H2O"
+
+            ett = when {
+                a < 2 -> "3-4 без манжеты"
+                a < 4 -> "4.5"
+                a < 6 -> "5"
+                a < 8 -> "5.5 с манжетой"
+                a < 10 -> "6 с манжетой"
+                a < 12 -> "6.5 с манжетой"
+                else -> "7-9 с манжетой"
+            }
+        }
+
+        if (m > 0) {
+            inspVol = "${m * 7} мл"
+            deadSpace = "${(m * 2.1).roundToInt()} мл"
+            larMask = when {
+                m < 6.5 -> "№1"
+                m < 20 -> "№2"
+                m < 30 -> "№2.5"
+                m < 70 -> "№3"
+                else -> "№4"
+            }
+        }
+
+        if (a > 0 && m > 0) {
+            val mvRaw = if (a < 1) 180 * m else if (a < 18) 100 * m else 80 * m
+            minVol = "$mvRaw мл"
+
+            val ockRaw = when {
+                a < 1 -> 90 * m
+                a < 4 -> 85 * m
+                a <= 6 -> 80 * m
+                a < 14 -> 75 * m
+                else -> 65 * m
+            }
+            ock = "$ockRaw мл"
+
+            val diurRaw = when {
+                a < 1 -> 3.5 * m
+                a < 2 -> 2.0 * m
+                a < 11 -> 1.7 * m
+                a <= 14 -> 1.4 * m
+                else -> 0.8 * m
+            }
+            hourlyDiuresis = "${diurRaw.roundToInt()} мл/ч"
+            dailyDiuresis = "${(diurRaw * 24.0).roundToInt()} мл"
+
+            // Drugs
+            val d_atr = if (a < 18) m * 0.01 else m * 0.02
+            drugsMap["atr"] = DrugEntry(String.format("%.1f", d_atr), String.format("%.1f", d_atr))
+
+            val d_diaz = m * 0.2
+            drugsMap["diaz"] = DrugEntry(String.format("%.1f", d_diaz), String.format("%.1f", d_diaz / 5.0))
+
+            val d_dim = m * 0.5
+            drugsMap["dimedrol"] = DrugEntry(String.format("%.1f", d_dim), String.format("%.1f", d_dim / 10.0))
+
+            val d_drop = m * 0.1
+            drugsMap["drop"] = DrugEntry(String.format("%.1f", d_drop), String.format("%.1f", d_drop / 2.5))
+
+            val d_mid = if (a < 18) m * 0.2 else m * 0.1
+            drugsMap["mid"] = DrugEntry(String.format("%.1f", d_mid), String.format("%.1f", d_mid / 5.0))
+
+            val d_prom = if (a < 18) m * 0.1 else m * 0.2
+            val promMl = if (a < 18) d_prom / 5.0 else d_prom / 20.0
+            drugsMap["prom"] = DrugEntry(String.format("%.1f", d_prom), String.format("%.1f", promMl))
+
+            // Anesthetics
+            val d_ket = m * 2.0
+            drugsMap["ket"] = DrugEntry(
+                mg = String.format("%.1f", d_ket),
+                ml = String.format("%.1f", d_ket / 50.0),
+                mgMaintenance = "${m} мг или ${m * 4} мг/ч",
+                mlMaintenance = String.format("%.1f мл или %.1f мл/ч", m / 50.0, m * 4.0 / 50.0)
+            )
+
+            val d_prop = if (a < 8) m * 4.0 else m * 2.5
+            val s_prop = if (a < 8) m * 12.0 else m * 8.0
+            drugsMap["prop"] = DrugEntry(
+                mg = String.format("%.1f", d_prop),
+                ml = String.format("%.1f", d_prop / 10.0),
+                mgMaintenance = String.format("%.1f мг/ч", s_prop),
+                mlMaintenance = String.format("%.1f мл/ч", s_prop / 10.0)
+            )
+
+            drugsMap["tiop"] = DrugEntry(
+                mg = "${m * 5}",
+                ml = "Произв.",
+                mgMaintenance = "50-100 взрослым, 25-50 детям",
+                mlMaintenance = "Произв."
+            )
+
+            val d_ox = if (a < 14) m * 100 else m * 70
+            drugsMap["oxib"] = DrugEntry(
+                mg = "$d_ox",
+                ml = String.format("%.1f", d_ox / 200.0),
+                mgMaintenance = "${m * 40}",
+                mlMaintenance = String.format("%.1f", m * 40.0 / 200.0)
+            )
+
+            // Muscle relaxants
+            val ia = if (a < 14) m * 0.4 else m * 0.5
+            drugsMap["i_atr"] = DrugEntry(String.format("%.1f", ia), String.format("%.1f", ia / 10.0))
+
+            val ip = if (a < 1) m * 0.04 else if (a < 14) m * 0.057 else m * 0.075
+            drugsMap["i_pip"] = DrugEntry(String.format("%.2f", ip), "Произв.")
+
+            val is_val = if (a < 1) m * 3.0 else if (a <= 3) m * 2.0 else m * 1.5
+            drugsMap["i_suk"] = DrugEntry(String.format("%.1f", is_val), String.format("%.1f", is_val / 20.0))
+
+            val pa = m * 0.3
+            drugsMap["p_atr"] = DrugEntry(String.format("%.1f", pa), String.format("%.1f", pa / 10.0))
+
+            val pp = m * 0.0125
+            drugsMap["p_pip"] = DrugEntry(String.format("%.3f", pp), "Произв.")
+
+            val ps = if (a < 1) m * 2.5 else if (a <= 3) m * 1.5 else m * 1.0
+            drugsMap["p_suk"] = DrugEntry(String.format("%.1f", ps), String.format("%.1f", ps / 20.0))
+
+            // Locals
+            drugsMap["lido_an"] = DrugEntry("до " + String.format("%.1f", m * 5.0), "до " + String.format("%.1f", m * 5.0 / 10.0))
+            drugsMap["bupi"] = DrugEntry("до " + String.format("%.1f", m * 2.5), "до " + String.format("%.1f", m * 2.5 / 2.5))
+
+            // Analgesics
+            val analginMg = if (a < 14) "${m * 10}" else "500-1000"
+            val analginMl = if (a < 14) String.format("%.1f", m * 10.0 / 500.0) else "1-2"
+            drugsMap["analgin"] = DrugEntry(analginMg, analginMl)
+
+            val d_ketor = m * 0.5
+            drugsMap["ketor"] = DrugEntry(String.format("%.1f", d_ketor), String.format("%.1f", d_ketor / 30.0))
+
+            val d_morph = m * 0.07
+            drugsMap["morphin"] = DrugEntry(String.format("%.1f", d_morph), String.format("%.1f", d_morph / 10.0))
+
+            val trm = if (a < 14) m * 0.075 else m * 0.2
+            drugsMap["trim"] = DrugEntry(String.format("%.1f", trm), String.format("%.1f", trm / 20.0))
+
+            val tramMg = if (a < 1) "Нет" else if (a < 14) "${m * 1}" else "50"
+            val tramMl = if (a < 1) "Нет" else if (a < 14) String.format("%.1f", m / 50.0) else "1"
+            drugsMap["tramadol"] = DrugEntry(tramMg, tramMl)
+
+            val fentMg = if (a < 12) String.format("%.3f", m * 0.002) else "0.1"
+            val fentMl = if (a < 12) String.format("%.3f", m * 0.002 / 0.05) else "2"
+            drugsMap["fent"] = DrugEntry(fentMg, fentMl)
+
+            // Steroids & Diuretics
+            val predMg = if (a < 14) (if (a < 1) "${m * 2}" else "${m * 1}") else "до 1200 / сут"
+            drugsMap["prednisolon"] = DrugEntry(predMg, "Произв.")
+
+            drugsMap["metpred"] = DrugEntry("${m * 10}", "Произв.")
+
+            val dexaMg = if (a in 1..13) String.format("%.2f", m * 0.097) else "до 80 / сут"
+            drugsMap["dexa"] = DrugEntry(dexaMg, "Произв.")
+
+            val furoMg = if (a < 14) "${m * 1}" else "20-40"
+            val furoMl = if (a < 14) String.format("%.1f", m / 10.0) else "1-2"
+            drugsMap["furo"] = DrugEntry(furoMg, furoMl)
+
+            drugsMap["mannit"] = DrugEntry("${m * 1000}", String.format("%.1f", m * 1000.0 / 150.0))
+
+            // Hemostatics, Cards & Antidotes
+            val etm = if (a < 14) m * 20 else m * 15
+            drugsMap["etam"] = DrugEntry("$etm / сут", String.format("%.1f / сут", etm / 125.0))
+
+            val amcMg = if (a < 18) "${m * 75}" else "5000"
+            val amcMl = if (a < 18) String.format("%.1f", m * 75.0 / 50.0) else "100 мл"
+            drugsMap["amc"] = DrugEntry(amcMg, amcMl)
+
+            drugsMap["lido"] = DrugEntry("${m * 1}", String.format("%.1f", m / 20.0))
+            drugsMap["amio"] = DrugEntry("${m * 5}", "Произв.")
+
+            val d_nal = if (a < 18) m * 0.01 else 4.0
+            val s_nal_ml = if (a < 18) String.format("%.2f", m * 0.01 / 4.0) else "1"
+            drugsMap["nalox"] = DrugEntry(String.format("%.2f", d_nal), s_nal_ml)
+
+            var metMg = "10"
+            var metMl = "2"
+            if (a < 2) {
+                metMg = "Нет"
+                metMl = "Нет"
+            } else if (a < 6) {
+                metMg = String.format("%.1f", m * 0.1)
+                metMl = String.format("%.1f", m * 0.1 / 5.0)
+            } else if (a < 18) {
+                metMg = "5"
+                metMl = "1"
+            }
+            drugsMap["metoclop"] = DrugEntry(metMg, metMl)
+        }
+
+        return AnesthesiaData(
+            ad = ad, bpm = bpm, ipm = ipm, cvd = cvd, ett = ett,
+            inspVol = inspVol, deadSpace = deadSpace, larMask = larMask,
+            minVol = minVol, ock = ock, hourlyDiuresis = hourlyDiuresis, dailyDiuresis = dailyDiuresis,
+            drugs = drugsMap
+        )
     }
 }
